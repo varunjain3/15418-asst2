@@ -11,9 +11,7 @@
 
 #include "CycleTimer.h"
 
-
 extern float toBW(int bytes, float sec);
-
 
 /* Helper function to round up to a power of 2.
  */
@@ -29,7 +27,37 @@ static inline int nextPow2(int n)
     return n;
 }
 
-void exclusive_scan(int* device_data, int length)
+__global__ void
+upscan(int *device_data, int twod, int N)
+{
+    int twod1 = twod * 2;
+    const int index = (blockIdx.x * blockDim.x + threadIdx.x) * twod1;
+    if (index < N)
+    {
+        device_data[index + twod1 - 1] += device_data[index + twod - 1];
+    }
+
+    if (twod == N / 2 && index == 0)
+    {
+        device_data[N - 1] = 0;
+    }
+}
+
+__global__ void
+downscan(int *device_data, int twod, int N)
+{
+    int twod1 = twod * 2;
+    int index = (blockIdx.x * blockDim.x + threadIdx.x) * twod1;
+
+    if (index < N)
+    {
+        int tmp = device_data[index + twod - 1];
+        device_data[index + twod - 1] = device_data[index + twod1 - 1];
+        device_data[index + twod1 - 1] += tmp;
+    }
+}
+
+void exclusive_scan(int *device_data, int length)
 {
     /* TODO
      * Fill in this function with your exclusive scan implementation.
@@ -43,15 +71,34 @@ void exclusive_scan(int* device_data, int length)
      * both the data array is sized to accommodate the next
      * power of 2 larger than the input.
      */
+    int N = nextPow2(length);
+    const int threadsPerBlock = 512;
+    // const int blocks = (N + threadsPerBlock - 1) / threadsPerBlock;
+
+    // upscan
+    for (int twod = 1; twod < N; twod *= 2)
+    {
+        int blocks = (N / (twod * 2) + threadsPerBlock - 1) / threadsPerBlock;
+        upscan<<<blocks, threadsPerBlock>>>(device_data, twod, N);
+        cudaThreadSynchronize();
+    }
+
+    // downscan
+    for (int twod = N / 2; twod >= 1; twod /= 2)
+    {
+        int blocks = (N / (twod * 2) + threadsPerBlock - 1) / threadsPerBlock;
+        downscan<<<blocks, threadsPerBlock>>>(device_data, twod, N);
+        cudaThreadSynchronize();
+    }
 }
 
 /* This function is a wrapper around the code you will write - it copies the
  * input to the GPU and times the invocation of the exclusive_scan() function
  * above. You should not modify it.
  */
-double cudaScan(int* inarray, int* end, int* resultarray)
+double cudaScan(int *inarray, int *end, int *resultarray)
 {
-    int* device_data;
+    int *device_data;
     // We round the array size up to a power of 2, but elements after
     // the end of the original input are left uninitialized and not checked
     // for correctness.
@@ -84,7 +131,8 @@ double cudaScan(int* inarray, int* end, int* resultarray)
  * You are not expected to produce competitive performance to the
  * Thrust version.
  */
-double cudaScanThrust(int* inarray, int* end, int* resultarray) {
+double cudaScanThrust(int *inarray, int *end, int *resultarray)
+{
 
     int length = end - inarray;
     thrust::device_ptr<int> d_input = thrust::device_malloc<int>(length);
@@ -108,9 +156,8 @@ double cudaScanThrust(int* inarray, int* end, int* resultarray) {
     return overallDuration;
 }
 
-
-
-int find_peaks(int *device_input, int length, int *device_output) {
+int find_peaks(int *device_input, int length, int *device_output)
+{
     /* TODO:
      * Finds all elements in the list that are greater than the elements before and after,
      * storing the index of the element into device_result.
@@ -125,14 +172,14 @@ int find_peaks(int *device_input, int length, int *device_output) {
      * it requires that. However, you must ensure that the results of
      * find_peaks are correct given the original length.
      */
+
     return 0;
 }
 
-
-
 /* Timing wrapper around find_peaks. You should not modify this function.
  */
-double cudaFindPeaks(int *input, int length, int *output, int *output_length) {
+double cudaFindPeaks(int *input, int length, int *output, int *output_length)
+{
     int *device_input;
     int *device_output;
     int rounded_length = nextPow2(length);
@@ -159,7 +206,6 @@ double cudaFindPeaks(int *input, int length, int *output, int *output_length) {
     return endTime - startTime;
 }
 
-
 void printCudaInfo()
 {
     // for fun, just print out some stats on the machine
@@ -170,7 +216,7 @@ void printCudaInfo()
     printf("---------------------------------------------------------\n");
     printf("Found %d CUDA devices\n", deviceCount);
 
-    for (int i=0; i<deviceCount; i++)
+    for (int i = 0; i < deviceCount; i++)
     {
         cudaDeviceProp deviceProps;
         cudaGetDeviceProperties(&deviceProps, i);

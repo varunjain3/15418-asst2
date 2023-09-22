@@ -80,16 +80,16 @@ void exclusive_scan(int *device_data, int length)
     {
         int blocks = (N / (twod * 2) + threadsPerBlock - 1) / threadsPerBlock;
         upscan<<<blocks, threadsPerBlock>>>(device_data, twod, N);
-        cudaThreadSynchronize();
     }
+    // cudaThreadSynchronize();
 
     // downscan
     for (int twod = N / 2; twod >= 1; twod /= 2)
     {
         int blocks = (N / (twod * 2) + threadsPerBlock - 1) / threadsPerBlock;
         downscan<<<blocks, threadsPerBlock>>>(device_data, twod, N);
-        cudaThreadSynchronize();
     }
+    // cudaThreadSynchronize();
 }
 
 /* This function is a wrapper around the code you will write - it copies the
@@ -156,6 +156,46 @@ double cudaScanThrust(int *inarray, int *end, int *resultarray)
     return overallDuration;
 }
 
+__global__ void
+slope(int *device_input, int N, int *device_output)
+{
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= N - 1)
+        return;
+    if (index < N - 1)
+        device_output[index] = device_input[index + 1] > device_input[index] ? 1 : (device_input[index + 1] < device_input[index] ? -1 : 0);
+}
+
+__global__ void
+mark_peaks(int *device_input, int *device_output, int N, int length)
+{
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index > N - 1)
+        return;
+
+    if ((index > 0 && index < length - 1) &&
+        (device_output[index] == -1 && device_output[index - 1] == 1))
+        device_input[index] = 1;
+    else
+        device_input[index] = 0;
+}
+
+__global__ void
+label_peaks(int *device_input, int *device_output, int *peak_count, int N, int length)
+{
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index > N - 1)
+        return;
+
+    if ((index > 0 && index < N - 1))
+    {
+        if (device_input[index] - device_input[index - 1] == 1)
+            device_output[device_input[index] - 1] = index - 1;
+    }
+    else if (index == N - 1)
+        *peak_count = device_input[index];
+}
+
 int find_peaks(int *device_input, int length, int *device_output)
 {
     /* TODO:
@@ -172,8 +212,29 @@ int find_peaks(int *device_input, int length, int *device_output)
      * it requires that. However, you must ensure that the results of
      * find_peaks are correct given the original length.
      */
+    int N = nextPow2(length);
+    const int threadsPerBlock = 512;
+    const int blocks = (N + threadsPerBlock - 1) / threadsPerBlock;
 
-    return 0;
+    // find slopes
+    slope<<<blocks, threadsPerBlock>>>(device_input, N, device_output);
+
+    // mark peaks
+    mark_peaks<<<blocks, threadsPerBlock>>>(device_input, device_output, N, length);
+
+    // prefix sum
+    exclusive_scan(device_input, N);
+
+    // label peaks
+    int *peak_count;
+    cudaMalloc((void **)&peak_count, sizeof(int));
+    label_peaks<<<blocks, threadsPerBlock>>>(device_input, device_output, peak_count, N, length);
+
+    int count;
+    cudaMemcpy(&count, peak_count, sizeof(int), cudaMemcpyDeviceToHost);
+
+    cudaFree(peak_count);
+    return count;
 }
 
 /* Timing wrapper around find_peaks. You should not modify this function.

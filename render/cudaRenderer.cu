@@ -79,6 +79,18 @@ __constant__ float cuConstColorRamp[COLOR_MAP_SIZE][3];
 #include "noiseCuda.cu_inl"
 #include "lookupColor.cu_inl"
 
+static inline int nextPow2(int n)
+{
+    n--;
+    n |= n >> 1;
+    n |= n >> 2;
+    n |= n >> 4;
+    n |= n >> 8;
+    n |= n >> 16;
+    n++;
+    return n;
+}
+
 // kernelClearImageSnowflake -- (CUDA device code)
 //
 // Clear the image, setting the image to the white-gray gradation that
@@ -492,8 +504,8 @@ shadeScreen(int screenMinX, int screenMaxX, int screenMinY, int screenMaxY,
 
             if (circleContribute(pixelCenterNorm, p, circleIndex))
             {
-                if (pixelX == 415 && pixelY == 562)
-                    printf("Pixel (%d, %d) contributes to circle %d index %d\n", pixelX, pixelY, circleIndex, index);
+                // if (pixelX == 415 && pixelY == 562)
+                //     printf("Pixel (%d, %d) contributes to circle %d index %d\n", pixelX, pixelY, circleIndex, index);
                 sharedMemory[index] = 1;
             }
             else
@@ -560,7 +572,7 @@ markCircle(int index, short *sharedMemory, short tileMinX, short tileMinY, short
     float3 p = *(float3 *)(&cuConstRendererParams.position[index3]);
     float rad = cuConstRendererParams.radius[index];
 
-    printf("index: %d p = (%f, %f, %f) rad = %f\n", index, p.x, p.y, p.z, rad);
+    // printf("index: %d p = (%f, %f, %f) rad = %f\n", index, p.x, p.y, p.z, rad);
 
     // Compute the bounding box of the circle. The bound is in integer
     // screen coordinates, so it's clamped to the edges of the screen.
@@ -659,50 +671,38 @@ getRGB(int circleIndex)
     }
 }
 
-// __device__ void
-// scatter(short *sharedMemory, short *pixels)
-// {
-//     const int N = 256 * TILE_SIZE * TILE_SIZE;
-//     __shared__ int shared_index;
-//     if (threadIdx.x == 0)
-//         shared_index = 1;
-//     __syncthreads();
+__device__ void
+scatter(short *sharedMemory, short *pixels)
+{
+    const int N = 256 * TILE_SIZE * TILE_SIZE;
+    __shared__ int shared_index;
+    if (threadIdx.x == 0)
+        shared_index = 1;
+    __syncthreads();
 
-//     int local_index = atomicAdd(&shared_index, 1);
+    int local_index = atomicAdd(&shared_index, 1);
 
-//     // __shared__ float4 sharedImage[256 * TILE_SIZE * TILE_SIZE + 1];
-//     const short coloredPixels = sharedMemory[N];
+    // __shared__ float4 sharedImage[256 * TILE_SIZE * TILE_SIZE + 1];
+    const short coloredPixels = sharedMemory[N];
 
-//     // shared memory for pixels
-//     __shared__ int numPixels[TILE_SIZE * TILE_SIZE];
-//     if (coloredPixels > 1000)
-//     {
-//         printf("coloredPixels: %d\n", coloredPixels);
-//     }
+    if (coloredPixels > 1000)
+    {
+        printf("coloredPixels: %d\n", coloredPixels);
+    }
 
-//     while (local_index <= N)
-//     {
-//         int3 p;
-//         p = circleIndexToPosition(local_index);
+    while (local_index <= N)
+    {
 
-//         if (p.z == 0)
-//         {
-//             int index = getIndex(p.x, p.y);
-//             numPixels[index] = sharedMemory[local_index] - sharedMemory[local_index - blockDim.x];
-//         }
-
-//         if (sharedMemory[local_index] - sharedMemory[local_index - 1])
-//         {
-//             int circleIndex = blockDim.x * blockIdx.x + p.z - 1;
-//             // printf("circleIndex: %d\n", circleIndex);
-//             // float3 p = make_int2(tileMinX + p.x, tileMinY + p.y);
-//             pixels[sharedMemory[local_index - 1]] = getRGB(circleIndex);
-//             printf("rgb: %f, %f, %f, l: %d\n", pixels[sharedMemory[local_index - 1]].x, pixels[sharedMemory[local_index - 1]].y, pixels[sharedMemory[local_index - 1]].z, local_index);
-//             // printf("p(%d, %d, %d) index: %d local: %d\n", p.x, p.y, p.z, index, local_index);
-//         }
-//         local_index = atomicAdd(&shared_index, 1);
-//     }
-// }
+        if (sharedMemory[local_index] - sharedMemory[local_index - 1])
+        {
+            int3 p;
+            p = circleIndexToPosition(local_index);
+            // int circleIndex = blockDim.x * blockIdx.x + p.z - 1;
+            pixels[sharedMemory[local_index - 1]] = local_index - 1;
+        }
+        local_index = atomicAdd(&shared_index, 1);
+    }
+}
 
 
 
@@ -719,20 +719,24 @@ reduction(short *pixels, short *sharedMemory, short tileMinX, short tileMinY)
 
     int numCircles = sharedMemory[endIndex] - sharedMemory[startIndex];
 
-    int offset = 4* (tileMinY * cuConstRendererParams.imageWidth + tileMinX);
+    int3 p = circleIndexToPosition(startIndex);
 
     float4 rgb = make_float4(1.f,1.f,1.f,1.f);
     for (int i=sharedMemory[startIndex]; i<sharedMemory[endIndex]; i++){
-        int circleIndex = blockDim.x * blockIdx.x + i%blockDim.x - 1;
+        int circleIndex = pixels[i];
+        circleIndex = circleIndex % blockDim.x + (blockDim.x * blockIdx.x);
 
-        printf("startIndex: %d, i: %d, circleIndex: %d\n", startIndex, i, circleIndex);
-        // rgb.w += pixels[startIndex + i].w;
-        // rgb.x = pixels[startIndex + i].x + (1 - pixels[startIndex + i].w) * rgb.x;
-        // rgb.y = pixels[startIndex + i].y + (1 - pixels[startIndex + i].w) * rgb.y;
-        // rgb.z = pixels[startIndex + i].z + (1 - pixels[startIndex + i].w) * rgb.z;
+        // printf("startIndex: %d, i: %d, circleIndex: %d\n", startIndex, i, circleIndex);
+        float4 tempRGB = getRGB(circleIndex);
+        rgb.x = tempRGB.x + (1 - tempRGB.w) * rgb.x;
+        rgb.y = tempRGB.y + (1 - tempRGB.w) * rgb.y;
+        rgb.z = tempRGB.z + (1 - tempRGB.w) * rgb.z;
+        rgb.w += tempRGB.w;
     }
-    // *(float4 *)(&cuConstRendererParams.imageData[offset]) = rgb;
-    printf("offset: %d, p(%f,%f,%f,%f)\n", offset, rgb.x, rgb.y, rgb.z, rgb.w);
+
+    int offset = 4* ((tileMinY + p.y) * cuConstRendererParams.imageWidth + (tileMinX+p.x));
+    *(float4 *)(&cuConstRendererParams.imageData[offset]) = rgb;
+    // printf("offset: %d, p(%f,%f,%f,%f)\n", offset, rgb.x, rgb.y, rgb.z, rgb.w);
 }
 
 // kernelRenderCircles -- (CUDA device code)
@@ -743,6 +747,10 @@ reduction(short *pixels, short *sharedMemory, short tileMinX, short tileMinY)
 __global__ void kernelRenderCircles()
 {
     __shared__ short sharedMemory[TILE_SIZE * TILE_SIZE * 256 + 1]; // Declare shared memory in global kernel
+    // short *sharedMemory;
+    // size_t size = TILE_SIZE * TILE_SIZE * 256 + 1;
+    // cudaMalloc((void**)&sharedMemory, size * sizeof(short));
+
 
     int drawCircle = 1;
 
@@ -755,13 +763,13 @@ __global__ void kernelRenderCircles()
     {
         for (short tileMinY = 0; tileMinY < imageHeight; tileMinY += TILE_SIZE)
         {
-            if (tileMinX == 412 && tileMinY == 560)
-            {
-            }
-            else
-            {
-                continue;
-            }
+            // if (tileMinX == 412 && tileMinY == 560)
+            // {
+            // }
+            // else
+            // {
+            //     continue;
+            // }
 
             short tileMaxX = min(tileMinX + TILE_SIZE, imageWidth);
             short tileMaxY = min(tileMinY + TILE_SIZE, imageHeight);
@@ -772,23 +780,23 @@ __global__ void kernelRenderCircles()
                 markZero(sharedMemory);
 
             __syncthreads();
-            if (tileMinX == 412 && tileMinY == 560 && threadIdx.x == 0)
-            {
-                printf("Tile - (%d, %d) - (%d, %d)\n", tileMinX, tileMinY, tileMaxX, tileMaxY);
-                // printf("Screen - (%d, %d) - (%d, %d)\n", screenMinX, screenMinY, screenMaxX, screenMaxY);
-                printf("Pixel (415, 562) contributes to circle %d\n", index);
-                for (int i = 0; i < 4; i++)
-                {
-                    int index = getIndex(3, 2, i);
-                    printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
-                }
-                int index = getIndex(3, 2, 0);
-                printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
-                index = getIndex(3, 3, 255);
-                printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
-                index = getIndex(3, 3, 255) + 1;
-                printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
-            }
+            // if (tileMinX == 0 && tileMinY == 0 && threadIdx.x == 0)
+            // {
+            //     printf("Tile - (%d, %d) - (%d, %d)\n", tileMinX, tileMinY, tileMaxX, tileMaxY);
+            //     // printf("Screen - (%d, %d) - (%d, %d)\n", screenMinX, screenMinY, screenMaxX, screenMaxY);
+            //     printf("Pixel (415, 562) contributes to circle %d\n", index);
+            //     for (int i = 0; i < 4; i++)
+            //     {
+            //         int index = getIndex(3, 2, i);
+            //         printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
+            //     }
+            //     int index = getIndex(3, 2, 0);
+            //     printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
+            //     index = getIndex(3, 3, 255);
+            //     printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
+            //     index = getIndex(3, 3, 255) + 1;
+            //     printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
+            // }
             __syncthreads();
 
             // // perform a scan on the shared memory for each pixel in the tile
@@ -798,27 +806,27 @@ __global__ void kernelRenderCircles()
             performScan(sharedMemory, flag);
             __syncthreads();
 
-            if (tileMinX == 412 && tileMinY == 560 && threadIdx.x == 0)
-            {
-                printf("Tile - (%d, %d) - (%d, %d)\n", tileMinX, tileMinY, tileMaxX, tileMaxY);
-                // printf("Screen - (%d, %d) - (%d, %d)\n", screenMinX, screenMinY, screenMaxX, screenMaxY);
-                printf("Pixel (415, 562) contributes to circle %d\n", index);
-                for (int i = 0; i < 4; i++)
-                {
-                    int index = getIndex(3, 2, i);
-                    printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
-                }
-                int index = getIndex(3, 2, 0);
-                printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
-                index = getIndex(3, 3, 255);
-                printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
-                index = getIndex(3, 3, 255) + 1;
-                printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
-            }
+            // if (tileMinX == 0 && tileMinY == 0 && threadIdx.x == 0)
+            // {
+            //     printf("Tile - (%d, %d) - (%d, %d)\n", tileMinX, tileMinY, tileMaxX, tileMaxY);
+            //     // printf("Screen - (%d, %d) - (%d, %d)\n", screenMinX, screenMinY, screenMaxX, screenMaxY);
+            //     printf("Pixel (415, 562) contributes to circle %d\n", index);
+            //     for (int i = 0; i < 4; i++)
+            //     {
+            //         int index = getIndex(3, 2, i);
+            //         printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
+            //     }
+            //     int index = getIndex(3, 2, 0);
+            //     printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
+            //     index = getIndex(3, 3, 255);
+            //     printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
+            //     index = getIndex(3, 3, 255) + 1;
+            //     printf("sharedMemory[%d]: %d\n", index, sharedMemory[index]);
+            // }
 
-            __shared__ short pixels[1000];
-            // scatter(sharedMemory, pixels);
-            // __syncthreads();
+            __shared__ short pixels[10000];
+            scatter(sharedMemory, pixels);
+            __syncthreads();
             
             reduction(pixels, sharedMemory, tileMinX, tileMinY);
         }

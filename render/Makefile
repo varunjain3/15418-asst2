@@ -1,6 +1,6 @@
 EXECUTABLE := render
 LDFLAGS=-L/usr/local/cuda-11.7/lib64/ -lcudart
-CU_FILES   := cudaRenderer.cu
+CU_FILES   := cudaRenderer2.cu
 CU_DEPS    :=
 CC_FILES   := main.cpp display.cpp benchmark.cpp refRenderer.cpp \
               noise.cpp ppm.cpp sceneLoader.cpp
@@ -28,7 +28,7 @@ LDFRAMEWORKS := $(addprefix -framework , $(FRAMEWORKS))
 NVCC=nvcc
 
 OBJS=$(OBJDIR)/main.o $(OBJDIR)/display.o $(OBJDIR)/benchmark.o $(OBJDIR)/refRenderer.o \
-     $(OBJDIR)/cudaRenderer.o $(OBJDIR)/noise.o $(OBJDIR)/ppm.o $(OBJDIR)/sceneLoader.o
+     $(OBJDIR)/cudaRenderer2.o $(OBJDIR)/noise.o $(OBJDIR)/ppm.o $(OBJDIR)/sceneLoader.o
 
 
 .PHONY: dirs clean
